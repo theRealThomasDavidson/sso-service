@@ -5,9 +5,8 @@ from urllib.parse import quote
 from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 import logging
-from dotenv import dotenv_values
+from datetime import timedelta
 
-dotenv_name = {"development": '.env', "testing": '.env.testing'}
 app = None
 db = SQLAlchemy()  # Create an instance of SQLAlchemy
 migrate = Migrate()
@@ -18,17 +17,14 @@ logging.basicConfig(level=logging.DEBUG)
 
 def create_app(config="development"):
     app = Flask(__name__)
-
     # Configuration and other app setup
-    if config in dotenv_name:
-        app.config['SQLALCHEMY_DATABASE_URI'] = generate_database_uri(dotenv_name[config])
-    else:
-        app.config['SQLALCHEMY_DATABASE_URI'] = generate_database_uri(dotenv_name["development"])
+    app.config['SQLALCHEMY_DATABASE_URI'] = generate_database_uri(config)
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['JWT_TOKEN_LOCATION'] = ['headers', 'cookies']
     app.config['JWT_BLACKLIST_ENABLED'] = True
     app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access', 'refresh']
     app.config['JWT_SECRET_KEY'] = environ.get('JWT_SECRET_KEY')
+    app.config['JWT_EXPIRATION_DELTA'] = timedelta(minutes=75)
 
     # Initialize the db object with your Flask application
     db.init_app(app)
@@ -68,23 +64,21 @@ def create_app(config="development"):
     return app
 
 
-def generate_database_uri(dotenv_path=".env"):
-    env_vars = dotenv_values(dotenv_path)
-    db_username = env_vars.get('DB_USERNAME')
-    db_password = env_vars.get('DB_PASSWORD')
-    db_host = env_vars.get('DB_HOST')
-    db_name = env_vars.get('DB_NAME')
+def generate_database_uri(config):
+    db_username = environ.get('DB_USERNAME')
+    db_password = environ.get('DB_PASSWORD')
+    db_host = environ.get('DB_HOST')
+    db_name = environ.get('DB_NAME')
 
     # Encode the username and password as bytes
     encoded_username = quote(db_username.encode('utf-8'), safe='')
     encoded_password = quote(db_password.encode('utf-8'), safe='')
-
     # Construct the database URI with encoded username and password
     return f'mysql+pymysql://{encoded_username}:{encoded_password}@{db_host}/{db_name}'
 
 app = create_app()
 
 
-@app.route('/', methods=['GET'])
+@app.route('/jwtfree', methods=['GET'])
 def hello():
     return 'Hello! This is a non-JWT required endpoint.'

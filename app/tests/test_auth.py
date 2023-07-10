@@ -1,83 +1,403 @@
-
-
 import unittest
-from unittest.mock import patch
-from dotenv import dotenv_values
-from sys import path as spath
-import logging
-from app import create_app
-from app import auth
+from app import app, db
 from app.models.user import User
+from random import randint
+from time import time, sleep
+import jwt
+from codecs import encode
+from json import loads as jsload
+import base64
 
-logging.basicConfig(level=logging.DEBUG)
 
 class AuthTestCase(unittest.TestCase):
-
     def setUp(self):
-        logging.warning(f"setup")
-        # Set up the testing environment
-        self.app, self.db = create_app("testing")
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-
-        # Create all database tables
-        self.db.create_all()
-
-        # Create an instance of the Auth class
-        self.auth = auth
+        # Set up the Flask app for testing
+        app.config['TESTING'] = True
+        with app.app_context():
+            # Create the database tables
+            db.create_all()
+        
+        self.app = app.test_client()
 
     def tearDown(self):
-        logging.warning(f"teardown")
-        self.db.drop_all()
-        self.app_context.pop()
-        
+        with app.app_context():
+            # Clean up the database tables
+            db.session.remove()
+            db.drop_all()
+    
+    def generate_unique_username(self, username):
+        timestamp = str(int(time() * 1000))[-3:]  # Append a timestamp
+        random_suffix = str(randint(1, 999))  # Append a random suffix
+        return f"{username}{timestamp}{random_suffix}"
+    
+    def register_user(self, username, password):
+        register_data = {'username': username, 'password': password}
+        return self.app.post('auth/register', json=register_data)
 
-    def test_register_user(self):
-        logging.warning(f"runnign test reg user")
+    def login_user(self, username, password):
+        while True:
+            self.register_user(username, password)
+            register_data = {'username': username, 'password': password}
+            response = self.app.post('auth/login', json=register_data)
+            if response.status_code != 200:
+                username = self.generate_unique_username(username)
+            return response.get_json()['jwt']
+    def logout_user(self, jwt): 
+        endpoint = 'auth/logout'
+        headers = {'Authorization': f'Bearer {jwt}'}
+        return self.app.post(endpoint, headers=headers)
+    def verify_jwt(self, jwt):
+        """
+        Verify the given JWT by accessing the verify endpoint.
+
+        Args:
+            jwt (str): The JWT token to verify.
+
+        Returns:
+            Flask response: The response object from accessing the verify endpoint.
+
+        """
+        verify_endpoint = 'auth/verify'
+        headers = {'Authorization': f'Bearer {jwt}'}
+        response = self.app.get(verify_endpoint, headers=headers)
+        return response
+
+    def test_dummy(self):
+        # Dummy test method
+        self.assertTrue(True)
+
+    def test_hello_endpoint(self):
+        response = self.app.get('/jwtfree')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_data(as_text=True), 'Hello! This is a non-JWT required endpoint.')
+    
+    
+    def test_register_endpoint(self):
+        """
+        Test the registration endpoint.
+
+        This method tests the registration functionality of the `/auth/register` endpoint.
+        It verifies that a user can successfully register with a unique username and password.
+        Since the focus is on testing the registration functionality, the presence or absence
+        of an authentication JWT is not considered in this test. This is based on the assumption
+        that the authentication JWT doesn't impact the logic or behavior of the registration
+        process.
+
+        Test Cases:
+        - Successful registration with a unique username and password.
+        - Malformed request with an empty username.
+        - Malformed request with an empty password.
+        - Registration attempt with a duplicate username.
+
+        Assertions:
+        - Verify the response status code and message for each test case.
+        - Check if the user is created in the database for a successful registration.
+        - Ensure the duplicate username registration returns the appropriate status code.
+
+        """
+        endpoint = 'auth/register'
+        http_method = self.app.post
+        # Prepare test data
         username = 'test_user'
         password = 'test_password'
-        registration_data = {'username': username, 'password': password}
+        data = {'username': username, 'password': password}
 
-        response = self.app.test_client().post('/auth/register', json=registration_data)
+        response = http_method(endpoint, json=data)
 
-        # Assert that the response status code is 200 (success)
+        # Check the response status code and message
+        self.assertEqual(response.status_code, 201)
+
+        # Check if the user was created in the database
+        with app.app_context():
+            user = User.query.filter_by(username=username).first()
+            self.assertIsNotNone(user)
+            self.assertEqual(user.username, username)
+        #empty username
+        data = {'password': password}
+        response = http_method(endpoint, json=data)
+        self.assertEqual(response.status_code, 400)
+        #empty password
+        username2 = 'test_user2'
+        data = {'username': username2}
+        response = http_method(endpoint, json=data)
+        self.assertEqual(response.status_code, 400)
+        with app.app_context():
+            user = User.query.filter_by(username=username2).first()
+            self.assertIsNone(user)
+        #duplicate Username
+        data = {'username': username, 'password': password}
+
+        response = http_method(endpoint, json=data)
+        self.assertEqual(response.status_code, 409)
+
+    def test_login_endpoint(self):
+        """
+        Test the login endpoint.
+
+        This method tests the login functionality of the `/auth/login` endpoint.
+        It verifies that a user can successfully log in with a valid username and password.
+        The presence of an authentication JWT is not considered in this test since it
+        doesn't impact the logic or behavior of the login process. The assumption is
+        that the login process should only check the validity of the username and password.
+
+        Note: Once a frontend is implemented, the frontend will take care of hashing the
+        salt and nonce on the client-side to prevent exposing them to logs or potential
+        man-in-the-middle attacks. This test assumes the current behavior of hashing on
+        the server-side.
+
+        Test Cases:
+        - Successful login with a valid username and password.
+        - Invalid login attempt with an incorrect username.
+        - Invalid login attempt with an incorrect password.
+
+        Assertions:
+        - Verify the response status code and message for each test case.
+        - Check if a JWT is returned for a successful login.
+        - Ensure an appropriate error message is returned for invalid login attempts.
+        - Verify that a user's JWT is unregistered upon subsequent logins.
+
+        """
+        endpoint = 'auth/login'
+        http_method = self.app.post
+
+        # Register a user
+        username = self.generate_unique_username('test_user_login_')
+        password = 'test_password'
+        self.register_user(username, password)
+        # Test successful login
+        login_data = {'username': username, 'password': password}
+        response = http_method(endpoint, json=login_data)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('jwt', response.get_json())
+
+        jwt_token = response.get_json()['jwt']
+        with app.app_context():
+            user = User.query.filter_by(username=username).first()
+            expected_user_id = user.id
+        try:
+            decoded_token = jwt.decode(jwt_token, app.config['JWT_SECRET_KEY'], algorithms=[app.config['JWT_ALGORITHM']])
+            self.assertEqual(decoded_token['sub'], expected_user_id) 
+        except jwt.ExpiredSignatureError:
+            self.fail("JWT has expired")
+        except jwt.InvalidTokenError:
+            self.fail("Invalid JWT")
+
+
+        # Test invalid username
+        invalid_username_data = {'username': 'invalid_username', 'password': password}
+        response = http_method(endpoint, json=invalid_username_data)
+        self.assertEqual(response.status_code, 401)
+        # Test invalid password
+        invalid_password_data = {'username': username, 'password': 'invalid_password'}
+        response = http_method(endpoint, json=invalid_password_data)
+        self.assertEqual(response.status_code, 401)
+
+
+    def test_verify_endpoint(self):
+        """
+        Test the verify endpoint.
+
+        This method tests the functionality of the `/auth/verify` endpoint.
+        It verifies that the endpoint requires a valid JWT for access.
+
+        Test Case:
+        - Access the endpoint without a valid JWT.
+
+        Assertion:
+        - Verify the response status code for the test case.
+
+        """
+        endpoint = 'auth/verify'
+        http_method = self.app.get
+
+        # Access the endpoint without a valid JWT
+        response = http_method(endpoint)
+        self.assertEqual(response.status_code, 401)
+        user = "user_to_verify"
+        password = "pass"
+        jwt = self.login_user(user, password)
+        headers = {'Authorization': f'Bearer {jwt}'}
+        response = self.app.get(endpoint, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(user, jsload(response.get_data()).get("username"))
+        #JUNK JWT SIGNATURE
+        jwt2 =  jwt[:-20] + encode(jwt[-20:], "rot_13")
+        headers = {'Authorization': f'Bearer {jwt2}'}
+        response = self.app.get(endpoint, headers=headers)
+        self.assertEqual(response.status_code, 422)
+        #JUNK payload
+        payload = jwt.split('.')[1]  # Extract the payload part of the JWT
+        decoded_payload = base64.urlsafe_b64decode(payload + '===').decode()  # Decode the Base64 payload
+        junk_payload = decoded_payload[:-1] + '}'  # Modify the payload by adding an invalid character
+        junk_jwt = '.'.join([jwt.split('.')[0], base64.urlsafe_b64encode(junk_payload.encode()).decode(), jwt.split('.')[2]])
+        headers = {'Authorization': f'Bearer {junk_jwt}'}
+        response = self.app.get(endpoint, headers=headers)
+        self.assertEqual(response.status_code, 422)
+        #expired jwt
+        register_data = {'username': user, 'password': password, "token_duration_seconds": 1}
+        response = self.app.post('auth/login', json=register_data)
+        if response.status_code != 200:
+            username = self.generate_unique_username(username)
+        expired_jwt = response.get_json()['jwt']
+        sleep(2)
+        headers = {'Authorization': f'Bearer {expired_jwt}'}
+        response = self.app.get(endpoint, headers=headers)
+        self.assertEqual(response.status_code, 401)
+
+
+    def test_logout_endpoint(self):
+        """
+        Test the logout endpoint.
+
+        This method tests the functionality of the `/auth/logout` endpoint.
+        It verifies that a logged-in user can successfully revoke their JWT token.
+
+        Test Case:
+        - Login with valid credentials and obtain a JWT.
+        - Access the verify endpoint with the JWT and verify its validity.
+        - Logout by revoking the JWT.
+        - Attempt to access the verify endpoint again with the revoked JWT.
+
+        Assertions:
+        - Verify the response status codes and messages for each test case.
+        - Ensure the JWT is successfully revoked.
+        - Verify that the revoked JWT is no longer valid.
+
+        """
+        logout_endpoint = 'auth/logout'
+        http_method = self.app.post
+
+        # Register a user and obtain a valid JWT
+        username = self.generate_unique_username('test_user')
+        password = 'test_password'
+        jwt = self.login_user(username, password)
+        # Verify the JWT by accessing the verify endpoint
+        verify_response = self.verify_jwt(jwt)
+        self.assertEqual(verify_response.status_code, 200)
+        # Logout by revoking the JWT
+        logout_headers = {'Authorization': f'Bearer {jwt}'}
+        logout_response = http_method(logout_endpoint, headers=logout_headers)
+        self.assertEqual(logout_response.status_code, 200)
+        self.assertEqual(logout_response.get_json()['message'], 'JWT revoked successfully')
+
+        # Attempt to access the verify endpoint again with the revoked JWT
+        verify_response = self.verify_jwt(jwt)
+        self.assertEqual(verify_response.status_code, 401)
+         
+    def test_delete_user_endpoint(self):  
+        """
+        Test the delete_user endpoint.
+
+        This method tests the functionality of the `/auth/delete_user` endpoint.
+        It verifies that a logged-in user can successfully delete their account and
+        that the account is properly revoked.
+
+        Test Steps:
+        1. Create a new user and log in.
+        2. Verify that the user can access the verify endpoint.
+        3. Delete the user account.
+        4. Verify that the user cannot access the verify endpoint.
+        5. Verify that the user cannot log in.
+        6. Verify that attempting to delete the user again returns a 404 status.
+
+        Assertions:
+        - Verify the response status code and message for each test step.
+        - Check if the user account is deleted from the database.
+        - Ensure that subsequent attempts to access protected endpoints fail.
+
+        """
+        endpoint_login = 'auth/login'
+        endpoint_delete = 'auth/delete_user'
+        http_method = self.app.delete
+
+        # Step 1: Create a new user and log in
+        username = 'user_delete_'
+        password = 'test_password'
+        jwt_token = self.login_user(username, password)
+
+        # Step 2: Verify that the user can access the verify endpoint
+        response = self.verify_jwt(jwt_token)
         self.assertEqual(response.status_code, 200)
 
-        # Assert that the response message indicates successful registration
-        expected_message = {'message': 'Registration successful'}
-        self.assertEqual(response.json, expected_message)
+        # Step 3: Delete the user account
+        headers = {'Authorization': f'Bearer {jwt_token}'}
+        response = http_method(endpoint_delete, headers=headers)
+        self.assertEqual(response.status_code, 204)
 
-        # Assert that the new user is added to the database
-        new_user = User.query.filter_by(username=username).first()
-        self.assertIsNotNone(new_user)
-        self.assertEqual(new_user.username, username)
-        # ... add more assertions to check other user attributes if necessary
+        # Step 4: Verify that the user cannot access the verify endpoint
+        response = self.verify_jwt(jwt_token)
+        self.assertEqual(response.status_code, 401)
 
-        # Clean up by deleting the new user from the database
-        # self.db.session.delete(new_user)
-        # self.db.session.commit()
+        # Step 5: Verify that the user cannot log in
+        response = self.app.post(endpoint_login, json={'username': username, 'password': password})
+        self.assertEqual(response.status_code, 401)
 
-    #def test_login_user(self):
-        # Test the login functionality
-        pass
+        # Step 6: Verify that attempting to delete the user again returns a 401 status
+        response = http_method(endpoint_delete, headers=headers)
+        self.assertEqual(response.status_code, 401)
 
-    #def test_logout_user(self):
-        # Test the logout functionality
-        pass
+    
+    def test_update_password(self):
+        # Step 1: Create a new user
+        username = 'user_update_'
+        initial_password = 'initial_pass'
+        self.register_user(username, initial_password)
 
-    #def test_access_protected_route(self):
-        # Test accessing a protected route with valid credentials
-        pass
+        # Define the HTTP method
+        http_method = self.app.post
+        endpoint_update_password = 'auth/update_password'
 
-    #def test_access_protected_route_unauthenticated(self):
-        # Test accessing a protected route without authentication
-        pass
+        # Step 2: Verify JWT
+        jwt_token = self.login_user(username, initial_password)
+        verify_response = self.verify_jwt(jwt_token)
+        self.assertEqual(verify_response.status_code, 200)
 
-    #def test_access_protected_route_expired_token(self):
-        # Test accessing a protected route with an expired token
-        pass
+        # Step 3: Logout
+        self.logout_user(jwt_token)
+
+        # Step 4: Test update password with missing initial password
+        new_password = 'new_pass'
+        response = http_method(
+            endpoint_update_password,
+            json={'username': username, 'new_password': new_password}
+        )
+        self.assertEqual(response.status_code, 400)
+        response = self.app.post("auth/login", json={'username': username, 'password': new_password} )
+        self.assertNotIn('jwt', response.get_json())
+
+        # Step 5: Test update password with incorrect initial password
+        response = http_method(
+            endpoint_update_password,
+            json={
+                'username': username,
+                'old_password': 'wrong_password',
+                'new_password': new_password
+            }
+        )
+        self.assertEqual(response.status_code, 401)
+        response = self.app.post("auth/login", json={'username': username, 'password': new_password} )
+        self.assertNotIn('jwt', response.get_json())
+
+        # Step 6: Update password
+        response = http_method(
+            endpoint_update_password,
+            json={
+                'username': username,
+                'old_password': initial_password,
+                'new_password': new_password
+            }
+        )
+        self.assertEqual(response.status_code, 201)
+
+        # Step 7: Verify old password is no longer valid
+        response = self.app.post("auth/login", json={'username': username, 'password': initial_password} )
+        self.assertNotIn('jwt', response.get_json())
+
+        # Step 8: Verify new password is valid
+        jwt_token = self.login_user(username, new_password)
+        verify_response = self.verify_jwt(jwt_token)
+        self.assertEqual(verify_response.status_code, 200)
 
 
 if __name__ == '__main__':
-    logging.warning(f"starting unittestmain")
     unittest.main()

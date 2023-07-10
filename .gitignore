@@ -43,3 +43,4 @@ Thumbs.db
 
 #temp files
 init-scripts/
+migrations/
