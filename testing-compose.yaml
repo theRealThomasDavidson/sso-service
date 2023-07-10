@@ -24,7 +24,7 @@ services:
       - 5000:5000
     networks:
       - my-network
-    command:  sh -c "pip install cryptography==40.0.2 pytest==7.3.1 && wait-for-it.sh mysql-container:3306 -t 60 && flask db upgrade && python -m pytest -s ./app/tests"
+    command:  sh -c "pip install cryptography==40.0.2 pytest==7.3.1 && wait-for-it.sh mysql-container:3306 -t 60 && echo initing && flask db init && echo migrating && flask db migrate && echo updating && flask db upgrade && python -m pytest -s ./app/tests"
     
 volumes:
   mysql-testing-data:

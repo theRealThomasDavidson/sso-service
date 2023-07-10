@@ -2,7 +2,6 @@ from flask import jsonify, request, Blueprint
 from app.models.user import User
 from app import db
 import bcrypt
-import secrets
 import jwt
 from os import environ
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
@@ -29,7 +28,9 @@ def register():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
-    if not username or not password:
+    email = data.get('email')
+
+    if not username or not password or not email:
         return create_response(400, 'Malformed request')
 
     # Check if the username already exists in the database
@@ -42,17 +43,16 @@ def register():
         salt = bcrypt.gensalt().decode()
 
         # Hash the password with the user's salt and the nonce
-        hashed_password = bcrypt.hashpw(
-            password.encode(), salt.encode())
+        hashed_password = bcrypt.hashpw(password.encode(), salt.encode())
 
-        # Create a new user with the hashed password and salt
-        user = User(username=username, password=hashed_password, salt=salt)
-        db.session.add(user)
-        db.session.commit()
+        # Create a new user with the hashed password, salt, and email
+        user = User(username=username, password=hashed_password, salt=salt, email=email)
+        user.save()
 
         return create_response(201, 'Registration successful')
+    except ValueError as e:
+        return create_response(400, "Invalid Email")
     except Exception as e:
-        # Handle any other exceptions that may occur during user creation
         return create_response(500, 'An error occurred during user registration.')
 
 

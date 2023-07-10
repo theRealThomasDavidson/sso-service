@@ -44,7 +44,6 @@ def create_app(config="development"):
     def handle_revoked_token(jwt_header, jwt_payload):
         return jsonify({"message": "Token has been revoked"}), 401
 
-    from app.controller import app_bp
     from app.auth.auth import auth_bp
     from flask_swagger_ui import get_swaggerui_blueprint
 
@@ -57,7 +56,6 @@ def create_app(config="development"):
         },
     )
 
-    app.register_blueprint(app_bp, url_prefix='/app')
     app.register_blueprint(auth_bp, url_prefix='/auth')
     app.register_blueprint(swaggerui_blueprint)
 

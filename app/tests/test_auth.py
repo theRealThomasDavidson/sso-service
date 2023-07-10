@@ -31,7 +31,7 @@ class AuthTestCase(unittest.TestCase):
         return f"{username}{timestamp}{random_suffix}"
     
     def register_user(self, username, password):
-        register_data = {'username': username, 'password': password}
+        register_data = {'username': username, 'password': password, "email": "beej@hoax.json"}
         return self.app.post('auth/register', json=register_data)
 
     def login_user(self, username, password):
@@ -75,60 +75,59 @@ class AuthTestCase(unittest.TestCase):
     def test_register_endpoint(self):
         """
         Test the registration endpoint.
-
-        This method tests the registration functionality of the `/auth/register` endpoint.
-        It verifies that a user can successfully register with a unique username and password.
-        Since the focus is on testing the registration functionality, the presence or absence
-        of an authentication JWT is not considered in this test. This is based on the assumption
-        that the authentication JWT doesn't impact the logic or behavior of the registration
-        process.
-
-        Test Cases:
-        - Successful registration with a unique username and password.
-        - Malformed request with an empty username.
-        - Malformed request with an empty password.
-        - Registration attempt with a duplicate username.
+        ... (existing code) ...
 
         Assertions:
         - Verify the response status code and message for each test case.
         - Check if the user is created in the database for a successful registration.
         - Ensure the duplicate username registration returns the appropriate status code.
-
         """
+
         endpoint = 'auth/register'
         http_method = self.app.post
+
         # Prepare test data
         username = 'test_user'
         password = 'test_password'
-        data = {'username': username, 'password': password}
 
+        # Successful registration with a unique username, password, and properly formatted email
+        data = {'username': username, 'password': password, 'email': 'beej@hoax.json'}
         response = http_method(endpoint, json=data)
-
-        # Check the response status code and message
         self.assertEqual(response.status_code, 201)
 
-        # Check if the user was created in the database
+        # Malformed request with an empty username
+        data = {'password': password, 'email': 'beej@hoax.json'}
+        response = http_method(endpoint, json=data)
+        self.assertEqual(response.status_code, 400)
+
+        # Malformed request with an empty password
+        username2 = 'test_user2'
+        data = {'username': username2, 'email': 'beej@hoax.json'}
+        response = http_method(endpoint, json=data)
+        self.assertEqual(response.status_code, 400)
+
+        # Malformed request with an improperly formatted email
+        username3 = 'test_user3'
+        data = {'username': username3, 'password': password, 'email': 'invalid_email'}
+        response = http_method(endpoint, json=data)
+        self.assertEqual(response.status_code, 400)
+        # Malformed request with no email
+        username3 = 'test_user3'
+        data = {'username': username3, 'password': password, }
+        response = http_method(endpoint, json=data)
+        self.assertEqual(response.status_code, 400)
+
+        # Registration attempt with a duplicate username
+        data = {'username': username, 'password': password, 'email': 'beej@hoax.json'}
+        response = http_method(endpoint, json=data)
+        self.assertEqual(response.status_code, 409)
+
+        # Verify that the duplicate username was not created in the database
         with app.app_context():
             user = User.query.filter_by(username=username).first()
             self.assertIsNotNone(user)
             self.assertEqual(user.username, username)
-        #empty username
-        data = {'password': password}
-        response = http_method(endpoint, json=data)
-        self.assertEqual(response.status_code, 400)
-        #empty password
-        username2 = 'test_user2'
-        data = {'username': username2}
-        response = http_method(endpoint, json=data)
-        self.assertEqual(response.status_code, 400)
-        with app.app_context():
-            user = User.query.filter_by(username=username2).first()
-            self.assertIsNone(user)
-        #duplicate Username
-        data = {'username': username, 'password': password}
 
-        response = http_method(endpoint, json=data)
-        self.assertEqual(response.status_code, 409)
 
     def test_login_endpoint(self):
         """

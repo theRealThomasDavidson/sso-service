@@ -24,7 +24,7 @@ services:
       - 5000:5000
     networks:
       - my-network
-    command: sh -c "pip install cryptography==40.0.2 && wait-for-it.sh mysql-container:3306 -t 60 && flask db upgrade && flask run --host=0.0.0.0"
+    command: sh -c "pip install cryptography==40.0.2 && wait-for-it.sh mysql-container:3306 -t 60 && echo migrating && flask db migrate && echo updating && flask db upgrade && flask run --host=0.0.0.0"
     
 volumes:
   mysql-data:
