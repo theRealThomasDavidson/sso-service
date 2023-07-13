@@ -1,4 +1,4 @@
-from flask import jsonify, request, Blueprint
+from flask import jsonify, request, Blueprint, session
 from app.models.user import User
 from app import db
 import bcrypt
@@ -7,7 +7,12 @@ from os import environ
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from app.models.revoked_tokens import RevokedToken
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from secrets import token_urlsafe
+from hashlib import sha3_512, sha256, md5
+from base64 import b64encode, b64decode, urlsafe_b64encode
+from logging import warning
+from flask_cors import cross_origin
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -20,6 +25,15 @@ def create_response(status_code, message="", data=None):
     if data is not None:
         response.update(data)
     return jsonify(response), status_code
+
+def generate_bad_salt(username):
+    mess = username.encode()  # Initial salt value is the username
+    for _ in range(5):
+        mess = sha256(mess + b'wrench').digest()
+    salt = md5(mess).digest()[:16]
+    output = bcrypt._bcrypt.encode_base64(salt)
+    supposed = b"$2b$" + ("%2.2u" % 12).encode("ascii") + b"$" + output
+    return supposed.decode() 
 
 #CREATE
 @auth_bp.route('/register', methods=['POST'])
@@ -127,26 +141,97 @@ def login():
 
     user = User.query.filter_by(username=username).first()
 
-    if user:
+    if not user:
+        return create_response(401, 'Invalid username or password')
 
-        # Hash the password with the user's salt and the nonce
-        hashed_password = bcrypt.hashpw(
-            (password).encode(), user.salt.encode())
+    # Hash the password with the user's salt and the nonce
+    hashed_password = bcrypt.hashpw(
+        (password).encode(), user.salt.encode())
 
-        if (user.password.encode() == hashed_password):
-            # Authentication successful, generate JWT
-            payload = {
-                # Subject claim (can be user ID or any identifier)
-                'sub': user.id,
-                'jti': str(uuid4()),
-                'exp': datetime.utcnow() + td_exp
-            }
-            jwt_token = jwt.encode(
-                payload, environ.get('JWT_SECRET_KEY'), algorithm='HS256')
+    if not (user.password.encode() == hashed_password):
+        return create_response(401, 'Invalid username or password')
+    # Authentication successful, generate JWT
+    payload = {
+        # Subject claim (can be user ID or any identifier)
+        'sub': user.id,
+        'jti': str(uuid4()),
+        'exp': datetime.utcnow() + td_exp
+    }
+    jwt_token = jwt.encode(
+        payload, environ.get('JWT_SECRET_KEY'), algorithm='HS256')
 
-            return create_response(200, 'Login successful', {'jwt': jwt_token})
+    return create_response(200, 'Login successful', {'jwt': jwt_token})
 
-    return create_response(401, 'Invalid username or password')
+
+
+@auth_bp.route("/login/challenge", methods=["POST"])
+@cross_origin(supports_credentials=True)
+def login_challenge():
+    TIME_OUT_SEC = 10
+    data = request.get_json()
+    warning(data)
+    username = data.get('username')
+    if not username:
+        return create_response(400, data={"error": "Username is required"})
+    user = User.query.filter_by(username=username).first()
+    nonce = token_urlsafe()
+    if not user:
+        salt = generate_bad_salt(username)
+    else:
+        salt = user.salt
+        session["username"] = user.username
+        session["nonce"] = nonce
+        session["timeout"] = datetime.utcnow()+timedelta(seconds=TIME_OUT_SEC)
+    response_data = {
+        'nonce': nonce,
+        'salt': salt
+    }
+    return create_response(200, data=response_data)
+
+@auth_bp.route("/login/answer", methods=["POST"])
+@cross_origin(supports_credentials=True)
+def login_answer():
+    data = request.get_json()
+    client_password = data.get('password')  # of the form sha3_512(bcrypt(password+salt), nonce)
+    if not client_password:
+        return create_response(400, data={"error": "please provide a password"})
+    username = session.get('username')
+    nonce = session.get('nonce')
+    timeout = session.get("timeout")
+    if not (username and nonce and timeout):
+        # this comes up if a the user did not receive a challenge and therefore did not provide a correct username
+        return create_response(401, data={"error": "Invalid username or password"})
+    timeout = timeout.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > timeout:
+        return create_response(410, {"error": "Challenge timed out."})
+    data = request.get_json()
+    client_password = data.get('password')  # of the form sha3_512(bcrypt(password+salt), nonce)
+    exp = data.get('token_duration_seconds')
+    user = User.query.filter_by(username=username).first()
+    my_password = user.password
+    my_password = bytes(my_password, 'utf-8')
+    my_password = sha3_512((my_password.decode()+nonce).encode())
+    my_password = urlsafe_b64encode(my_password.digest()).decode()
+    client_password = client_password.replace(r"/", r"_").replace(r"+", r"-")
+    if my_password != client_password:
+        return create_response(401, data={"error": "Invalid username or password"})
+    # Authentication successful, generate JWT
+    if not exp:
+        td_exp = timedelta(minutes=75)
+    else:
+        td_exp = timedelta(seconds=min(75 * 60,exp))
+    payload = {
+        'sub': user.id,
+        'jti': str(uuid4()),
+        'exp': datetime.utcnow() + td_exp
+    }
+    jwt_token = jwt.encode(
+        payload, environ.get('JWT_SECRET_KEY'), algorithm='HS256')
+
+    return create_response(200, 'Login successful', {'jwt': jwt_token})
+    
+
+
 
 
 @auth_bp.route('/logout', methods=['POST'])
@@ -175,7 +260,7 @@ def confirm():
     user_id = get_jwt_identity()
 
     # Fetch the user from the database based on the user ID
-    user = db.session.query(User).get(user_id)
+    user = User.query.filter_by(id=user_id).first()
 
     # Return the username and user ID as JSON response
     return create_response(200, data={'username': user.username, 'user_id': user.id})

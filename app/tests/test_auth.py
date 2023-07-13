@@ -7,16 +7,19 @@ import jwt
 from codecs import encode
 from json import loads as jsload
 import base64
+import bcrypt
+from hashlib import sha3_512
+from datetime import datetime, timedelta
 
 
 class AuthTestCase(unittest.TestCase):
     def setUp(self):
         # Set up the Flask app for testing
         app.config['TESTING'] = True
+        app.config['SECRET_KEY'] = 'sekrit!'
         with app.app_context():
             # Create the database tables
             db.create_all()
-        
         self.app = app.test_client()
 
     def tearDown(self):
@@ -33,22 +36,32 @@ class AuthTestCase(unittest.TestCase):
     def register_user(self, username, password):
         register_data = {'username': username, 'password': password, "email": "beej@hoax.json"}
         return self.app.post('auth/register', json=register_data)
+    
+    def set_pass(self, password, salt, nonce):
+        b_hashed_password = bcrypt.hashpw(password.encode(), salt.encode())
+        sn_hashed_password = sha3_512((b_hashed_password.decode()+nonce).encode())
+        return base64.urlsafe_b64encode(sn_hashed_password.digest()).decode()
 
     def login_user(self, username, password):
         while True:
             self.register_user(username, password)
-            register_data = {'username': username, 'password': password}
-            response = self.app.post('auth/login', json=register_data)
+            login_data_1 = {'username': username}
+            response = self.app.post("auth/login/challenge", json=login_data_1)
+            salt = response.get_json()["salt"]
+            nonce = response.get_json()["nonce"]
+            login_data_2 = {'password': self.set_pass(password, salt, nonce)}
+            response = self.app.post("auth/login/answer", json=login_data_2)
             if response.status_code != 200:
                 username = self.generate_unique_username(username)
             return response.get_json()['jwt']
+    
     def logout_user(self, jwt): 
         endpoint = 'auth/logout'
         headers = {'Authorization': f'Bearer {jwt}'}
         return self.app.post(endpoint, headers=headers)
     def verify_jwt(self, jwt):
         """
-        Verify the given JWT by accessing the verify endpoint.
+        Verify the given JWT by accessing the verify endpoint. 
 
         Args:
             jwt (str): The JWT token to verify.
@@ -396,6 +409,92 @@ class AuthTestCase(unittest.TestCase):
         jwt_token = self.login_user(username, new_password)
         verify_response = self.verify_jwt(jwt_token)
         self.assertEqual(verify_response.status_code, 200)
+
+
+    def test_login_challenge_endpoint(self):
+        
+        endpoint_1 = 'auth/login/challenge'
+        http_method_1 = self.app.post
+        endpoint_2 = 'auth/login/answer'
+        http_method_2 = self.app.post
+        username = self.generate_unique_username('test_user_login_challenge_')
+        password = 'test_password'
+        self.register_user(username, password)
+        # Test successful login
+        login_data_1 = {'username': username}
+        response = http_method_1(endpoint_1, json=login_data_1)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('salt', response.get_json())
+        self.assertIn('nonce', response.get_json())
+        salt = response.get_json()["salt"]
+        nonce = response.get_json()["nonce"]
+        login_data_2 = {'password': self.set_pass(password, salt, nonce)}
+        response = http_method_2(endpoint_2, json=login_data_2)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('jwt', response.get_json())
+        #verify successful login with jwt
+        jwt = response.get_json()['jwt']
+        verify_resp = self.verify_jwt(jwt)
+        self.assertEqual(verify_resp.status_code, 200)
+        self.assertEqual(username, jsload(verify_resp.get_data()).get("username"))
+        # test no username
+        login_data_1 = {}
+        response = http_method_1(endpoint_1, json=login_data_1)
+        self.assertEqual(response.status_code, 400)
+        # test incorrect username
+        bad_username = self.generate_unique_username('bad_username_')
+        login_data_1 = {'username': bad_username}
+        response = http_method_1(endpoint_1, json=login_data_1)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('salt', response.get_json())
+        self.assertIn('nonce', response.get_json())
+        salt = response.get_json()["salt"]
+        nonce = response.get_json()["nonce"]
+        login_data_2 = {'password': self.set_pass(password, salt, nonce)}
+        response = http_method_2(endpoint_2, json=login_data_2)
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn('jwt', response.get_json())
+        #test incorrect username receives the same salt
+        response = http_method_1(endpoint_1, json=login_data_1)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(salt, response.get_json()["salt"])
+        # Test timeout scenario
+        login_data_1 = {'username': username}
+        response = http_method_1(endpoint_1, json=login_data_1)
+        self.assertIn('salt', response.get_json())
+        self.assertIn('nonce', response.get_json())
+        salt = response.get_json()["salt"]
+        nonce = response.get_json()["nonce"]
+        sleep(11)  # Sleep for 11 seconds to simulate timeout
+        login_data_2 = {'password': self.set_pass(password, salt, nonce)}
+        response = http_method_2(endpoint_2, json=login_data_2)
+        self.assertEqual(response.status_code, 410)
+        self.assertNotIn('jwt', response.get_json())
+
+        # Test incorrect password (plaintext)
+        login_data_1 = {'username': username}
+        response = http_method_1(endpoint_1, json=login_data_1)
+        self.assertIn('salt', response.get_json())
+        self.assertIn('nonce', response.get_json())
+        salt = response.get_json()["salt"]
+        nonce = response.get_json()["nonce"]
+        login_data_2 = {'password': password}
+        response = http_method_2(endpoint_2, json=login_data_2)
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn('jwt', response.get_json())
+
+        # Test incorrect password (hashed)
+        login_data_1 = {'username': username}
+        response = http_method_1(endpoint_1, json=login_data_1)
+        self.assertIn('salt', response.get_json())
+        self.assertIn('nonce', response.get_json())
+        salt = response.get_json()["salt"]
+        nonce = response.get_json()["nonce"]
+        incorrect_hashed_password = self.set_pass('incorrect_password', salt, nonce)
+        login_data_2 = {'password': incorrect_hashed_password}
+        response = http_method_2(endpoint_2, json=login_data_2)
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn('jwt', response.get_json())
 
 
 if __name__ == '__main__':

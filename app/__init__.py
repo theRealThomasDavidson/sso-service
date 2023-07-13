@@ -6,6 +6,7 @@ from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 import logging
 from datetime import timedelta
+from flask_cors import CORS
 
 app = None
 db = SQLAlchemy()  # Create an instance of SQLAlchemy
@@ -17,6 +18,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 def create_app(config="development"):
     app = Flask(__name__)
+    CORS(app, supports_credentials=True, resources={r"/*": {"origins": "http://localhost:3000"}})
     # Configuration and other app setup
     app.config['SQLALCHEMY_DATABASE_URI'] = generate_database_uri(config)
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -25,6 +27,7 @@ def create_app(config="development"):
     app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access', 'refresh']
     app.config['JWT_SECRET_KEY'] = environ.get('JWT_SECRET_KEY')
     app.config['JWT_EXPIRATION_DELTA'] = timedelta(minutes=75)
+    app.config['SECRET_KEY'] = environ.get('SESSION_SECRET')
 
     # Initialize the db object with your Flask application
     db.init_app(app)

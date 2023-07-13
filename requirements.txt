@@ -14,3 +14,4 @@ SQLAlchemy==2.0.17
 Werkzeug==2.3.6
 nltk==3.8.1
 python-dotenv==1.0.0
+Flask-Cors==4.0.0
