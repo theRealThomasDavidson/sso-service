@@ -7,18 +7,23 @@ from flask_jwt_extended import JWTManager
 import logging
 from datetime import timedelta
 from flask_cors import CORS
+from dotenv import dotenv_values
 
 app = None
 db = SQLAlchemy()  # Create an instance of SQLAlchemy
 migrate = Migrate()
 SWAGGER_URL = '/api/docs'  # URL for exposing Swagger UI (without trailing '/')
+dotenv_path = '.env'
 # Our API url (can of course be a local resource)
 API_URL = '../swag.json'
 logging.basicConfig(level=logging.DEBUG)
 
 def create_app(config="development"):
+    substitution_dict = dict(dotenv_values(dotenv_path))
     app = Flask(__name__)
-    CORS(app, supports_credentials=True, resources={r"/*": {"origins": "http://localhost:3000"}})
+    CORS(app, supports_credentials=True, resources={
+            r"/*": {"origins": substitution_dict.get("CORS_ORIGINS").split(",")}
+        })
     # Configuration and other app setup
     app.config['SQLALCHEMY_DATABASE_URI'] = generate_database_uri(config)
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
